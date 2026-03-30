@@ -1,0 +1,241 @@
+\documentclass[11pt]{article}
+
+\usepackage[margin=1in]{geometry}
+\usepackage{amsmath}
+\usepackage{amssymb}
+\usepackage{booktabs}
+\usepackage{graphicx}
+\usepackage[hidelinks]{hyperref}
+
+\newcommand{\prot}{OTR++-AD}
+
+\title{\prot: A Prototype Secure Messaging Protocol with Adaptive Deniability}
+\author{Anonymous}
+\date{\today}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+This paper describes \prot{}, a small research prototype that combines (i) an asynchronous prekey-based handshake inspired by X3DH~\cite{signal_x3dh}, (ii) continuous key evolution inspired by the Double Ratchet~\cite{signal_doubleratchet}, and (iii) an \emph{adaptive deniability} policy that can switch between deniable symmetric authentication (HMAC with delayed key disclosure, following the rationale of OTR v3~\cite{otr_v3}) and publicly verifiable authentication (Ed25519 signatures~\cite{rfc8032}).
+
+The implementation is written in Python and instantiates its core cryptographic building blocks with X25519~\cite{rfc7748}, HKDF-SHA256~\cite{rfc5869}, HMAC-SHA256~\cite{rfc2104}, and AES-256-GCM~\cite{nist_fips197,nist_sp800_38d}. We emphasize that this is a prototype intended to be described accurately: it is not formally verified and it intentionally makes simplifying choices relative to the referenced designs.
+\end{abstract}
+
+\section{Introduction}
+Secure messaging protocols must often balance competing goals: asynchronous session establishment, forward secrecy, post-compromise recovery, and deniability properties that limit third-party attribution.
+Modern deployments commonly combine an asynchronous prekey handshake with a ratcheting state machine for ongoing communication.
+
+\prot{} explores a specific design point: \emph{adaptive deniability} as an explicit per-message policy.
+In deniable mode, messages are authenticated with a symmetric MAC and older MAC keys are periodically disclosed so that authenticators become forgeable after disclosure (as in OTR's ``revealing MAC keys'' rationale~\cite{otr_v3}).
+In verifiable mode, messages are signed so that a transcript can be publicly verified.
+
+\paragraph{Contributions.}
+This work contributes (1) a compact prototype that integrates a prekey handshake, a Double-Ratchet-style key schedule, and explicit deniable vs.~verifiable authentication modes; and (2) a clear accounting of the prototype's security-relevant simplifications and limitations.
+
+\section{Background and Related Work}
+\textbf{X3DH.} The X3DH key agreement protocol~\cite{signal_x3dh} is designed for asynchronous settings in which a recipient publishes a prekey bundle to a server.
+\prot{} follows the same high-level setting (prekey server, signed prekeys, optional one-time prekeys) but does \emph{not} implement the full X3DH transcript.
+
+\textbf{Double Ratchet.} The Double Ratchet algorithm~\cite{signal_doubleratchet} combines a symmetric-key ratchet (per-message KDF chain) with a DH ratchet (periodic DH updates), and specifies how to handle skipped/out-of-order messages.
+\prot{} implements a similar split into a root key plus directional chain keys, along with a cache of skipped message keys.
+
+\textbf{OTR deniability.} OTR v3 provides deniability properties by using MAC-based authentication and later revealing MAC keys, enabling transcript forgeability after key disclosure~\cite{otr_v3}.
+\prot{} uses the same conceptual mechanism for its deniable mode, while also supporting an explicitly non-deniable, signature-based mode.
+
+\section{System Model and Threats}
+We consider a pair of users (Alice and Bob) communicating over an untrusted network.
+An attacker can observe, drop, reorder, and inject messages.
+We additionally consider a prekey distribution server that stores and serves public key material.
+
+We do \emph{not} attempt to model side channels, endpoint compromise, or UI-level authentication.
+Instead, we focus on describing the prototype's handshake, key schedule, and authentication modes, and we document where trust assumptions are placed.
+
+\begin{figure}[t]
+\centering
+\fbox{\begin{minipage}{0.92\linewidth}
+\vspace{0.5em}
+\textbf{Placeholder:} Architecture diagram showing (1) Bob uploading an identity key, signed prekey, and one-time prekeys to a server; (2) Alice fetching Bob's bundle and sending an initial message; (3) subsequent bidirectional messaging under a ratcheting state.
+\vspace{0.5em}
+\end{minipage}}
+\caption{\prot{} architecture and message flow.}
+\label{fig:architecture}
+\end{figure}
+
+\section{Protocol Overview}
+Each session maintains (a) a \emph{root key} updated by DH outputs and (b) per-direction \emph{chain keys} updated once per message.
+The encryption key, authentication key, and AEAD nonce are derived per message.
+The authentication mechanism is selected per message: deniable mode uses HMAC~\cite{rfc2104} and optional disclosure of older MAC keys; verifiable mode uses Ed25519 signatures~\cite{rfc8032}.
+
+\subsection{Prekey material and server API}
+Each user maintains:
+\begin{itemize}
+\item an X25519 identity DH key pair (for Diffie--Hellman)~\cite{rfc7748},
+\item an Ed25519 identity signing key pair (for signing prekeys and signatures)~\cite{rfc8032},
+\item a signed X25519 prekey, signed by the identity signing key,
+\item an optional set of one-time X25519 prekeys.
+\end{itemize}
+The server stores public bundles and serves a single (possibly absent) one-time prekey when queried.
+
+\paragraph{Prototype caveat (one-time prekeys).}
+In this prototype, one-time prekeys are not atomically consumed on fetch; they are only marked used via an explicit delete/mark operation.
+This differs from typical one-time prekey semantics and should be treated as a known limitation.
+
+\section{Handshake (Asynchronous AKE)}
+\prot{} uses an asynchronous prekey handshake inspired by X3DH~\cite{signal_x3dh}.
+The initiator (Alice) fetches Bob's prekey bundle from the server, verifies the signature on Bob's signed prekey, and then performs Diffie--Hellman computations using a freshly generated ephemeral X25519 key.
+
+\subsection{Key agreement transcript}
+Let $\mathrm{DH}(\cdot,\cdot)$ denote X25519 ECDH~\cite{rfc7748}.
+Alice generates an ephemeral key $E_A$ and computes:
+\begin{align*}
+\mathrm{DH}_1 &= \mathrm{DH}(E_A, I_B) \\
+\mathrm{DH}_2 &= \mathrm{DH}(E_A, SPK_B) \\
+\mathrm{DH}_3 &= \mathrm{DH}(E_A, OPK_B) \quad \text{(optional)}
+\end{align*}
+She derives an initial secret using HKDF-SHA256~\cite{rfc5869} over the concatenation $\mathrm{DH}_1 \|\| \mathrm{DH}_2 \|\| \mathrm{DH}_3$.
+
+In the prototype implementation, this HKDF output (a 32-byte value) is then used to derive a session identifier and to initialize the ratchet state: both parties apply one additional root-KDF step that mixes in $\mathrm{DH}_2 = \mathrm{DH}(E_A, SPK_B)$ to obtain the initial root key and the first directional chain key.
+
+\paragraph{Prototype caveat (initiator identity binding).}
+Unlike X3DH~\cite{signal_x3dh}, the initiator identity DH key is not mixed into the key agreement transcript in this prototype.
+Consequently, mutual authentication properties are strictly weaker than full X3DH unless additional out-of-band checks are used.
+
+\begin{figure}[t]
+\centering
+\fbox{\begin{minipage}{0.92\linewidth}
+\vspace{0.5em}
+\textbf{Placeholder:} Handshake sequence diagram. Show: Bob publishes $(I_B, SPK_B, \sigma(SPK_B), OPK_B)$; Alice verifies $\sigma(SPK_B)$ with Ed25519~\cite{rfc8032}; Alice sends $E_A$ and prekey identifiers; both sides derive the same session secret using HKDF~\cite{rfc5869} and initialize ratchet state.
+\vspace{0.5em}
+\end{minipage}}
+\caption{Asynchronous prekey handshake flow.}
+\label{fig:handshake}
+\end{figure}
+
+\section{Messaging and Continuous Key Evolution}
+After handshake, both parties maintain a state that evolves with each message.
+The design follows the Double Ratchet's separation between a root KDF chain and per-direction symmetric chains~\cite{signal_doubleratchet}.
+
+\subsection{Root and chain KDFs}
+The prototype uses HKDF-SHA256~\cite{rfc5869} for both:
+\begin{itemize}
+\item \texttt{kdf\_root}: derives a new root key and a fresh chain key from a DH output.
+\item \texttt{kdf\_chain}: derives a per-message secret and the next chain key.
+\end{itemize}
+Skipped/out-of-order message handling follows the Double Ratchet idea of caching message keys derived while ``fast-forwarding'' the receiving chain~\cite{signal_doubleratchet}.
+
+\subsection{Message format and authenticated bytes}
+Messages are serialized as JSON.
+The prototype defines two canonical byte sequences:
+\begin{itemize}
+\item \emph{AEAD associated data (AAD)}: includes routing metadata and counters.
+\item \emph{Authentication bytes}: includes the AAD-relevant fields \emph{plus} ciphertext and any disclosed MAC keys.
+\end{itemize}
+
+\begin{table}[t]
+\centering
+\begin{tabular}{@{}p{0.22\linewidth}p{0.16\linewidth}p{0.56\linewidth}@{}}
+\toprule
+Field & Covered by MAC/signature? & Description \\
+\midrule
+\texttt{header} & Yes & Sender/receiver identifiers and handshake metadata (first message only). \\
+\texttt{mode\_flag} & Yes & Deniable vs.~verifiable mode selector. \\
+\texttt{session\_id} & Yes & Session identifier derived from handshake secret. \\
+\texttt{counter} & Yes & Per-direction message number in the current chain. \\
+\texttt{ephemeral\_pub} & Yes & Sender DH ratchet public key (base64). \\
+\texttt{ciphertext} & Yes & Base64 of \texttt{nonce || ciphertext || tag} (AES-256-GCM output prefixed with the nonce). \\
+\texttt{revealed\_mac\_keys} & Yes & In deniable mode, a list of disclosed MAC keys (base64). \\
+\texttt{mac} / \texttt{signature} & N/A & Authentication material (HMAC or Ed25519 signature). \\
+\bottomrule
+\end{tabular}
+\caption{Prototype message fields and authentication coverage.}
+\label{tab:message-format}
+\end{table}
+
+\subsection{AEAD choice and nonce handling}
+The prototype encrypts each message using AES-256-GCM~\cite{nist_fips197,nist_sp800_38d}.
+For each message, it derives an encryption key and a 96-bit GCM nonce from the per-message secret using HKDF-SHA256~\cite{rfc5869}.
+Because each message uses a fresh per-message secret, the nonce is deterministically derived from that per-message secret.
+
+\paragraph{Prototype caveat (redundant nonce transmission).}
+Even though the nonce is deterministically derived, the ciphertext encoding still prepends the nonce (\texttt{nonce || ciphertext || tag}).
+This is redundant but simplifies parsing.
+
+\begin{figure}[t]
+\centering
+\fbox{\begin{minipage}{0.92\linewidth}
+\vspace{0.5em}
+\textbf{Placeholder:} Ratchet state evolution diagram. Show: (1) symmetric chain advancing per message; (2) DH ratchet triggered on new remote ephemeral key; (3) caching skipped message keys for out-of-order delivery.
+\vspace{0.5em}
+\end{minipage}}
+\caption{Continuous key evolution inspired by the Double Ratchet.}
+\label{fig:ratchet}
+\end{figure}
+
+\section{Adaptive Deniability}
+\prot{} supports two authentication modes:
+\begin{itemize}
+\item \textbf{Deniable mode:} authenticate with HMAC-SHA256~\cite{rfc2104} under a per-message MAC key and optionally disclose older MAC keys.
+\item \textbf{Verifiable mode:} authenticate with Ed25519 signatures~\cite{rfc8032} over the same canonical authentication bytes.
+\end{itemize}
+
+\subsection{Deniable mode and MAC key disclosure}
+In deniable mode, each message carries an HMAC computed over canonical authentication bytes.
+Additionally, the sender includes a list of older MAC keys once they are past a disclosure interval.
+This follows the OTR v3 rationale that revealing MAC keys makes transcripts forgeable after disclosure~\cite{otr_v3}.
+
+\paragraph{Prototype caveat (no retroactive processing).}
+The receiver validates messages using the per-message MAC key derived from the ratchet state.
+Disclosed MAC keys are acknowledged but not used to retroactively reconstruct or re-verify earlier messages.
+
+\begin{figure}[t]
+\centering
+\fbox{\begin{minipage}{0.92\linewidth}
+\vspace{0.5em}
+\textbf{Placeholder:} Deniability timeline showing per-message MAC keys being queued and disclosed after a fixed interval; illustrate how disclosure enables forging of MAC authenticators in transcripts (per OTR v3 rationale~\cite{otr_v3}).
+\vspace{0.5em}
+\end{minipage}}
+\caption{Adaptive deniability via delayed MAC key disclosure (deniable mode) vs.~public signatures (verifiable mode).}
+\label{fig:deniability}
+\end{figure}
+
+\section{Security Discussion}
+This section summarizes intended properties and emphasizes what is (and is not) achieved by the prototype.
+
+\paragraph{Forward secrecy and recovery.}
+Per-message keys are derived from evolving chain keys, and DH ratchet steps periodically mix fresh DH outputs into a root key, following the Double Ratchet approach~\cite{signal_doubleratchet}.
+This is intended to limit the impact of key compromise across time, subject to correct implementation and state deletion.
+
+\paragraph{Server trust and authentication.}
+As with X3DH~\cite{signal_x3dh}, parties may need out-of-band authentication of identity keys to avoid server-mediated impersonation.
+This prototype's simplified handshake (not mixing the initiator identity DH key into the transcript) further motivates careful identity verification and/or protocol refinement.
+
+\paragraph{Deniability.}
+Verifiable mode intentionally provides transferable proof of authorship (signatures).
+Deniable mode avoids public verifiability by using symmetric authentication and, after disclosure, makes MAC authenticators forgeable (per OTR's ``revealing MAC keys'' rationale~\cite{otr_v3}).
+This does not address all notions of online deniability in asynchronous settings.
+
+\section{Implementation Notes}
+The prototype is implemented as a small Python codebase with separate modules for:
+handshake state, message construction/parsing, deniability state, and cryptographic primitives.
+The implementation uses X25519~\cite{rfc7748} for DH, Ed25519~\cite{rfc8032} for signatures, HKDF-SHA256~\cite{rfc5869} and HMAC-SHA256~\cite{rfc2104} for key derivation and deniable authentication, and AES-256-GCM~\cite{nist_fips197,nist_sp800_38d} for authenticated encryption.
+
+\section{Limitations and Future Work}
+The prototype is intentionally minimal, and several security-relevant gaps should be addressed before treating the design as a serious protocol candidate:
+\begin{itemize}
+\item \textbf{Handshake simplification:} initiator identity binding is weaker than X3DH~\cite{signal_x3dh}.
+\item \textbf{One-time prekey semantics:} the server does not atomically consume one-time prekeys on fetch.
+\item \textbf{Deniability engineering:} disclosed MAC keys are not used for retroactive verification, and the interaction between AEAD integrity and MAC-key disclosure should be analyzed more carefully.
+\item \textbf{No formal analysis:} there is no mechanized proof or formal model of the composed design.
+\end{itemize}
+
+Future work could (i) more closely follow the full X3DH transcript, (ii) implement stricter one-time prekey consumption semantics, (iii) adopt explicit bounds and deletion policies for skipped-message-key storage as recommended in the Double Ratchet specification~\cite{signal_doubleratchet}, and (iv) explore a more principled definition and evaluation of adaptive deniability.
+
+\section{Conclusion}
+\prot{} is a compact prototype that demonstrates how an asynchronous prekey handshake, a Double-Ratchet-inspired key schedule, and explicit deniable vs.~verifiable authentication modes can be combined.
+Its primary value is as an executable artifact whose behavior can be described precisely, along with a clear list of limitations that must be resolved for stronger security claims.
+
+\bibliographystyle{plain}
+\bibliography{references}
+
+\end{document}
