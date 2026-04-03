@@ -63,8 +63,11 @@ class PrekeyServerStore:
 					raise ValueError("one_time_prekeys must be a list")
 				for opk in one_time_prekeys:
 					if not isinstance(opk, dict):
+						# Ignore invalid OPK entries 
+						# instead of rejecting the whole bundle, to allow partial updates.
 						continue
 					if "id" not in opk or "public" not in opk:
+						# Ignore OPK entries missing required fields instead of rejecting the whole bundle.
 						continue
 					opk_id = str(opk["id"])
 					record.one_time_prekeys[opk_id] = {
@@ -138,7 +141,7 @@ class _PrekeyHandler(BaseHTTPRequestHandler):
 			return None, "json must be object"
 		return obj, None
 
-	def do_POST(self) -> None:  # noqa: N802
+	def do_POST(self) -> None:
 		parsed = urlparse(self.path)
 		if parsed.path != "/prekeys":
 			_json_response(self, 404, {"ok": False, "error": "not found"})
@@ -154,7 +157,7 @@ class _PrekeyHandler(BaseHTTPRequestHandler):
 			return
 		_json_response(self, 200, {"ok": True})
 
-	def do_GET(self) -> None:  # noqa: N802
+	def do_GET(self) -> None:
 		parsed = urlparse(self.path)
 		if not parsed.path.startswith("/prekeys/"):
 			_json_response(self, 404, {"ok": False, "error": "not found"})
@@ -170,7 +173,7 @@ class _PrekeyHandler(BaseHTTPRequestHandler):
 			return
 		_json_response(self, 200, {"ok": True, "prekeys": payload})
 
-	def do_DELETE(self) -> None:  # noqa: N802
+	def do_DELETE(self) -> None:
 		parsed = urlparse(self.path)
 		if not parsed.path.startswith("/prekeys/"):
 			_json_response(self, 404, {"ok": False, "error": "not found"})

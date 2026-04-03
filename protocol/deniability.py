@@ -37,6 +37,8 @@ def collect_revealable_mac_keys(state: DeniabilityState, *, current_index: int) 
 	reveal: List[bytes] = []
 	keep: List[Tuple[int, bytes]] = []
 	for idx, key in state.pending_mac_keys:
+		# If the message index associated with this MAC key is 
+		# at least reveal_interval less than the current index, we can reveal it.
 		if now - idx >= state.reveal_interval:
 			reveal.append(key)
 		else:

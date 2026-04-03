@@ -28,6 +28,7 @@ def hkdf_sha256(
 	info: bytes = b"",
 	length: int = AES_256_KEY_SIZE,
 ) -> bytes:
+	'''Derive bytes(keys) from input material using HKDF with SHA-256.'''
 	if not isinstance(input_material, (bytes, bytearray, memoryview)):
 		raise TypeError("input_material must be bytes")
 	if salt is not None and not isinstance(salt, (bytes, bytearray, memoryview)):
@@ -43,10 +44,12 @@ def hkdf_sha256(
 		salt=None if salt is None else bytes(salt),
 		info=bytes(info),
 	)
+	# HKDF derives keys as bytes from the input material.
 	return hkdf.derive(bytes(input_material))
 
 
 def hmac_sha256(key: bytes, data: bytes) -> bytes:
+	"""Compute HMAC-SHA256 of data using the given key. Returns the raw 32-byte tag."""
 	if not isinstance(key, (bytes, bytearray, memoryview)):
 		raise TypeError("key must be bytes")
 	if not isinstance(data, (bytes, bytearray, memoryview)):
@@ -57,13 +60,16 @@ def hmac_sha256(key: bytes, data: bytes) -> bytes:
 
 
 def kdf_root(root_key: bytes, dh_secret: bytes) -> Tuple[bytes, bytes]:
-	"""Derive a new root key and a new chain key from a DH shared secret."""
+	"""Derive a new root key and a new chain key from a DH shared secret.
+	Useful(used) for both session initialization and ratcheting.
+	"""
 	out = hkdf_sha256(
 		dh_secret,
 		salt=root_key,
 		info=b"OTR++/kdf_root",
 		length=64,
 	)
+	# Split the 64-byte output into two 32-byte keys: new root key and new chain key.
 	return out[:32], out[32:]
 
 
@@ -75,6 +81,7 @@ def kdf_chain(chain_key: bytes) -> Tuple[bytes, bytes]:
 		info=b"OTR++/kdf_chain",
 		length=64,
 	)
+	# Split the 64-byte output into two 32-byte keys: message key and next chain key.
 	return out[:32], out[32:]
 
 
@@ -85,8 +92,8 @@ def derive_key(input_material: bytes) -> bytes:
 
 def encrypt(key: bytes, plaintext: bytes, *, aad: bytes = b"", nonce: bytes | None = None) -> bytes:
 	"""Encrypt with AES-256-GCM.
-
-	Returns: nonce || ciphertext||tag
+	aad is optional additional authenticated data (not encrypted but included in the tag).
+	Returns: nonce || ciphertext || tag
 	"""
 	if len(key) != AES_256_KEY_SIZE:
 		raise ValueError("AES-256-GCM key must be 32 bytes")

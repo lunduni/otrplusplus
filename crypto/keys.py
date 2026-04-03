@@ -1,10 +1,14 @@
 """Key management for OTR++.
 
 Implements:
-- Identity keys (DH + signing)
-- Signed prekeys (DH keypair signed by identity signing key)
-- One-time prekeys (DH keypairs)
-- Ephemeral keys (DH keypairs) used for session init and ratcheting
+- Identity keys (DH + signing): 
+	long-term keys that identify a user and sign prekeys
+- Signed prekeys (DH keypair signed by identity signing key): 
+	medium-term keys that are used for session initiation and are rotated periodically
+- One-time prekeys (DH keypairs): 
+	short-term keys that are used once and then discarded
+- Ephemeral keys (DH keypairs) used for session init and ratcheting: 
+	short-term keys that are used for a single session and then discarded
 """
 
 from __future__ import annotations
@@ -30,6 +34,7 @@ from utils.conversions import b64e, int_to_bytes, utc_timestamp
 
 
 def x25519_public_bytes(public_key: X25519PublicKey) -> bytes:
+	"""Get the raw bytes of an X25519 public key for serialization."""
 	return public_key.public_bytes(
 		encoding=serialization.Encoding.Raw,
 		format=serialization.PublicFormat.Raw,
@@ -37,6 +42,7 @@ def x25519_public_bytes(public_key: X25519PublicKey) -> bytes:
 
 
 def x25519_private_bytes(private_key: X25519PrivateKey) -> bytes:
+	"""Get the raw bytes of an X25519 private key for serialization."""
 	return private_key.private_bytes(
 		encoding=serialization.Encoding.Raw,
 		format=serialization.PrivateFormat.Raw,
@@ -45,7 +51,17 @@ def x25519_private_bytes(private_key: X25519PrivateKey) -> bytes:
 
 
 def x25519_public_from_bytes(data: bytes) -> X25519PublicKey:
+	"""Construct an X25519PublicKey from raw bytes."""
+	if not isinstance(data, (bytes, bytearray, memoryview)):
+		raise TypeError("data must be bytes")
 	return X25519PublicKey.from_public_bytes(bytes(data))
+
+
+def x25519_private_from_bytes(data: bytes) -> X25519PrivateKey:
+	"""Construct an X25519PrivateKey from raw bytes."""
+	if not isinstance(data, (bytes, bytearray, memoryview)):
+		raise TypeError("data must be bytes")
+	return X25519PrivateKey.from_private_bytes(bytes(data))
 
 
 @dataclass(frozen=True)
@@ -54,12 +70,15 @@ class IdentityKeyPair:
 
 	- dh_*: X25519 for Diffie-Hellman
 	- sig_*: Ed25519 for signatures
+
 	"""
 
 	dh_private: X25519PrivateKey
 	dh_public: X25519PublicKey
 	sig_private: Ed25519PrivateKey
 	sig_public: Ed25519PublicKey
+
+	# Side note to self: X25519 allows two people to agree on a secret key. (DH key exchange)
 
 	@staticmethod
 	def generate() -> "IdentityKeyPair":
@@ -104,6 +123,7 @@ class SignedPreKey:
 
 	@staticmethod
 	def _signature_message(dh_public: X25519PublicKey, timestamp: int) -> bytes:
+		# Include a fixed prefix to domain-separate from other signatures and prevent replay attacks across different prekeys.
 		return b"OTR++-AD/SPK" + x25519_public_bytes(dh_public) + int_to_bytes(timestamp)
 
 	def verify(self, identity_sig_public: Ed25519PublicKey) -> bool:

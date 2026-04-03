@@ -48,7 +48,7 @@ def main() -> None:
 
 	time.sleep(0.1)
 
-	print("OTR++-AD Demo")
+	print("OTR++ Demo")
 	print("Server:", server_url)
 	print()
 

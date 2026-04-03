@@ -90,6 +90,8 @@ class Message:
 		)
 
 	def aad_bytes(self) -> bytes:
+		# AAD is the data authenticated by the MAC/signature. 
+		# It includes all fields except the MAC/signature themselves.
 		return _aad_payload(self.header, self.mode_flag, self.session_id, self.counter, self.ephemeral_pub)
 
 	def auth_bytes(self) -> bytes:
@@ -139,8 +141,8 @@ class SessionState:
 
 
 def _derive_message_keys(message_key: bytes) -> Tuple[bytes, bytes]:
-	enc_key = hkdf_sha256(message_key, salt=None, info=b"OTR++-AD/msg_enc", length=32)
-	mac_key = hkdf_sha256(message_key, salt=None, info=b"OTR++-AD/msg_mac", length=32)
+	enc_key = hkdf_sha256(message_key, salt=None, info=b"OTR++/msg_enc", length=32)
+	mac_key = hkdf_sha256(message_key, salt=None, info=b"OTR++/msg_mac", length=32)
 	return enc_key, mac_key
 
 
@@ -198,7 +200,7 @@ def construct_outgoing_message(
 	message_key, next_chain_key = kdf_chain(session.chain_key)
 	print("[KEY ROTATION]")
 	enc_key, mac_key = _derive_message_keys(message_key)
-	nonce = hkdf_sha256(message_key, salt=None, info=b"OTR++-AD/msg_nonce", length=12)
+	nonce = hkdf_sha256(message_key, salt=None, info=b"OTR++/msg_nonce", length=12)
 
 	aad = _aad_payload(header, mode, session.session_id, counter, ephemeral_pub_b64)
 	ct = encrypt(enc_key, plaintext.encode("utf-8"), aad=aad, nonce=nonce)
@@ -263,11 +265,15 @@ def process_incoming_message(
 
 	chain_id = _remote_pub_b64(session.dh_remote)
 	if msg.counter < session.recv_counter:
+		# This is a message from an old sending chain (before a DH ratchet). 
+		# We should have the message key cached in previous_keys.
 		key = session.previous_keys.get((chain_id, msg.counter))
 		if key is None:
 			raise ValueError("replayed/unknown counter")
 		message_key = key
 	else:
+		# Advance the receiving chain to derive the message key. 
+		# This will also update the session state to reflect the new recv_counter and previous_keys.
 		while session.recv_counter < msg.counter:
 			mk, ck_next = kdf_chain(session.receiving_chain_key)
 			session.previous_keys[(chain_id, session.recv_counter)] = mk

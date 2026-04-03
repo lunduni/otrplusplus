@@ -79,7 +79,7 @@ def parse_receiver_prekeys(prekeys_response: dict[str, Any]) -> ReceiverPrekeys:
 
 
 def _derive_session_id(root_key: bytes) -> str:
-	sid = hkdf_sha256(root_key, salt=None, info=b"OTR++-AD/session_id", length=16)
+	sid = hkdf_sha256(root_key, salt=None, info=b"OTR++/session_id", length=16)
 	return b64e(sid)
 
 
@@ -89,7 +89,9 @@ def initiate_session(sender: Any, receiver_prekeys: dict[str, Any]):
 	Returns: (session_state, handshake_header_fields)
 	"""
 
-	from protocol.messaging import SessionState  # local import to avoid cycles
+	# local import to avoid circular imports
+	# we got into trouble trying to import at the top level
+	from protocol.messaging import SessionState
 	from crypto.keys import EphemeralKey
 
 	rp = parse_receiver_prekeys(receiver_prekeys)
@@ -98,10 +100,16 @@ def initiate_session(sender: Any, receiver_prekeys: dict[str, Any]):
 	if not ed25519_verify(rp.identity_sig_public, spk_msg, rp.signed_prekey_signature):
 		raise ValueError("invalid signed prekey signature")
 
+
+	# Generate an ephemeral key pair for this session. 
+	# This will be included in the first message and used for DH key agreement.
 	ek_a = EphemeralKey.generate()
 
+	# Perform the DH computations as per X3DH:
 	dh1 = ek_a.dh_private.exchange(rp.identity_dh_public)
 	dh2 = ek_a.dh_private.exchange(rp.signed_prekey_public)
+	# DH3 is optional and only performed if the receiver has an unused OPK. 
+	# The initiator can still proceed without it, but including it provides better forward secrecy.
 	if rp.one_time_prekey_public is not None:
 		dh3 = ek_a.dh_private.exchange(rp.one_time_prekey_public)
 		used_opk_id = rp.one_time_prekey_id
@@ -109,9 +117,12 @@ def initiate_session(sender: Any, receiver_prekeys: dict[str, Any]):
 		dh3 = b""
 		used_opk_id = None
 
-	root0 = hkdf_sha256(dh1 + dh2 + dh3, salt=None, info=b"OTR++-AD/x3dh", length=32)
+	# Derive the initial root key and chain keys from the DH outputs using HKDF.
+	root0 = hkdf_sha256(dh1 + dh2 + dh3, salt=None, info=b"OTR++/x3dh", length=32)
 	session_id = _derive_session_id(root0)
 
+	# The initiator's sending chain key is derived from the root key 
+	# and the DH with the receiver's signed prekey.
 	dh_remote = rp.signed_prekey_public
 	root_key, sending_chain_key = kdf_root(root0, ek_a.dh_private.exchange(dh_remote))
 
@@ -144,7 +155,7 @@ def initiate_session(sender: Any, receiver_prekeys: dict[str, Any]):
 def accept_session(receiver: Any, header: dict[str, Any], sender_ephemeral_pub_b64: str):
 	"""Derive a session state for the receiver from the initial message."""
 
-	from protocol.messaging import SessionState  # local import to avoid cycles
+	from protocol.messaging import SessionState
 
 	sender_ephemeral_pub = x25519_public_from_bytes(b64d(sender_ephemeral_pub_b64))
 
@@ -154,6 +165,9 @@ def accept_session(receiver: Any, header: dict[str, Any], sender_ephemeral_pub_b
 	ik_b_priv = receiver.key_store.identity.dh_private
 	spk = receiver.key_store.signed_prekey
 	if spk_id and str(spk.id) != str(spk_id):
+		# The initiator specified a signed prekey ID that doesn't match the receiver's current one.
+		# This could happen if the receiver rotated their signed prekey after the initiator fetched
+		# Any ideas on how to handle this case, Hadar/Paul? 
 		pass
 
 	dh1 = ik_b_priv.exchange(sender_ephemeral_pub)
@@ -167,7 +181,7 @@ def accept_session(receiver: Any, header: dict[str, Any], sender_ephemeral_pub_b
 		except Exception:
 			dh3 = b""
 
-	root0 = hkdf_sha256(dh1 + dh2 + dh3, salt=None, info=b"OTR++-AD/x3dh", length=32)
+	root0 = hkdf_sha256(dh1 + dh2 + dh3, salt=None, info=b"OTR++/x3dh", length=32)
 	session_id = _derive_session_id(root0)
 
 	dh_remote = sender_ephemeral_pub

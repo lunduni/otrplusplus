@@ -30,7 +30,7 @@ def b64d(data: str) -> bytes:
 	s += "=" * pad_len
 	try:
 		return base64.urlsafe_b64decode(s.encode("ascii"))
-	except Exception as exc:  # pragma: no cover
+	except Exception as exc:
 		raise ValueError("invalid base64") from exc
 
 
